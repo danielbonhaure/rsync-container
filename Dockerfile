@@ -83,15 +83,16 @@ USER root
 # Setup cron
 ARG RSYNC_CMD="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
 ARG REDIR_CMD_OUTPUT=">> /proc/1/fd/1 2>> /proc/1/fd/1"
+ARG CRON_TIME_STR="0 0 20 * *"
 ARG SRC_FOLDER1
 ARG SRC_FOLDER2
 ARG SRC_FOLDER3
 ARG SRC_FOLDER4
 ARG DEST_FOLDER
-RUN (echo "0 0 20 * * ${RSYNC_CMD} ${SRC_FOLDER1}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "0 0 20 * * ${RSYNC_CMD} ${SRC_FOLDER2}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "0 0 20 * * ${RSYNC_CMD} ${SRC_FOLDER3}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "0 0 20 * * ${RSYNC_CMD} ${SRC_FOLDER4}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
+RUN (echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER1}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
+RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR}${RSYNC_CMD} ${SRC_FOLDER2}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
+RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER3}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
+RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER4}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
 
 # Add Tini (https://github.com/krallin/tini#using-tini)
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
@@ -118,6 +119,7 @@ USER $NON_ROOT_USR
 #        --build-arg SSHUSER=<user-of-rsync-dest> \
 #        --build-arg SSHPASS=<pass-of-rsync-dest> \
 #        --build-arg SSHHOST=<host-of-rsync-dest> \
+#        --build-arg CRON_TIME_STR="0 0 20 * *" \
 #        --build-arg SRC_FOLDER1="<path-to-folder-1>" \
 #        --build-arg SRC_FOLDER2="<path-to-folder-2>" \
 #        --build-arg SRC_FOLDER3="<path-to-folder-3>" \
