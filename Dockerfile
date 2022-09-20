@@ -82,17 +82,12 @@ USER root
 
 # Setup cron
 ARG RSYNC_CMD="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
-ARG REDIR_CMD_OUTPUT=">> /proc/1/fd/1 2>> /proc/1/fd/1"
+ARG RDR_OUTPUT_CMD=">> /proc/1/fd/1 2>> /proc/1/fd/1"
 ARG CRON_TIME_STR="0 0 20 * *"
-ARG SRC_FOLDER1
-ARG SRC_FOLDER2
-ARG SRC_FOLDER3
-ARG SRC_FOLDER4
-ARG DEST_FOLDER
-RUN (echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER1}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER2}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER3}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
-RUN (crontab -u $NON_ROOT_USR -l; echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FOLDER4}/ ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${REDIR_CMD_OUTPUT}") | crontab -u $NON_ROOT_USR -
+ARG SRC_FILES="/data/{folder1/*.html,folder2/*.html}"
+ARG DEST_FOLDER="/tmp"
+RUN (echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FILES} ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${RDR_OUTPUT_CMD}") | \
+    crontab -u $NON_ROOT_USR -
 
 # Add Tini (https://github.com/krallin/tini#using-tini)
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
@@ -120,19 +115,13 @@ USER $NON_ROOT_USR
 #        --build-arg SSHPASS=<pass-of-rsync-dest> \
 #        --build-arg SSHHOST=<host-of-rsync-dest> \
 #        --build-arg CRON_TIME_STR="0 0 20 * *" \
-#        --build-arg SRC_FOLDER1="<path-to-folder-1>" \
-#        --build-arg SRC_FOLDER2="<path-to-folder-2>" \
-#        --build-arg SRC_FOLDER3="<path-to-folder-3>" \
-#        --build-arg SRC_FOLDER4="<path-to-folder-4>" \
-#        --build-arg DEST_FOLDER="<path-to-folder>" \
+#        --build-arg SRC_FILES="<path-to-src-files>" \
+#        --build-arg DEST_FOLDER="<path-to-dest-folder>" \
 #        --tag sync-pronos:latest .
 
 # CORRER OPERACIONALMENTE CON CRON
 # docker run --name sync-pronos \
-#        --volume <path-to-folder>:<path-to-folder-1> \
-#        --volume <path-to-folder>:<path-to-folder-2> \
-#        --volume <path-to-folder>:<path-to-folder-3> \
-#        --volume <path-to-folder>:<path-to-folder-4> \
+#        --volume <path-to-src-files-folder>:<path-to-src-files-folder> \
 #        --detach sync-pronos:latest
 
 
