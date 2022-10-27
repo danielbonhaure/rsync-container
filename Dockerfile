@@ -89,6 +89,10 @@ ARG DEST_FOLDER="/tmp"
 RUN (echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FILES} ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${RDR_OUTPUT_CMD}") | \
     crontab -u $NON_ROOT_USR -
 
+# Set cron default shell to bash
+RUN (echo "SHELL=/bin/bash"; crontab -u $NON_ROOT_USR -l) | crontab -u $NON_ROOT_USR -
+
+
 # Add Tini (https://github.com/krallin/tini#using-tini)
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 
