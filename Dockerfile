@@ -1,12 +1,31 @@
 
-########################
-## CREATE FINAL IMAGE ##
-########################
+
+##########################
+## Set GLOBAL arguments ##
+##########################
+
+# Set user name and id
+ARG USR_NAME="nonroot"
+ARG USER_UID="1000"
+
+# Set group name and id
+ARG GRP_NAME="nonroot"
+ARG USER_GID="1000"
+
+# Set users passwords
+ARG ROOT_PWD="root"
+ARG USER_PWD=$USR_NAME
+
+
+
+#################################################
+## Stage 1: Install OS packages (create image) ##
+#################################################
 
 # Create image
-FROM debian:bullseye-slim AS final_image
+FROM debian:bullseye-slim AS rsync_builder
 
-# set environment variables
+# Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
 
 # Install OS packages
@@ -17,37 +36,36 @@ RUN apt-get -y -qq update && \
         # to run ssh-keygen
         openssh-client \
         # to send public key to rsync destine
-        sshpass \
-        # install Tini (https://github.com/krallin/tini#using-tini)
-        tini \
-        # to see process with pid 1
-        htop \
-        # to run sudo
-        sudo \
-        # to allow edit files
-        vim \
-        # to run process with cron
-        cron && \
+        sshpass && \
     rm -rf /var/lib/apt/lists/*
 
-# Setup cron to allow it run as a non root user
-RUN sudo chmod u+s $(which cron)
 
 
-
-#######################
-## SETUP FINAL IMAGE ##
-#######################
+###################################
+## Stage 2: Create non-root user ##
+###################################
 
 # Create image
-FROM final_image
+FROM rsync_builder AS non_root_img
 
-# Set passwords
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Renew ARGs
+ARG USR_NAME
+ARG USER_UID
+ARG GRP_NAME
+ARG USER_GID
 ARG ROOT_PWD
-ARG NON_ROOT_PWD
+ARG USER_PWD
 
-# Pasar a root
-USER root
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # to run sudo
+        sudo && \
+    rm -rf /var/lib/apt/lists/*
 
 # Modify root password
 RUN echo "root:$ROOT_PWD" | chpasswd
@@ -55,83 +73,176 @@ RUN echo "root:$ROOT_PWD" | chpasswd
 # Create a non-root user, so the container can run as non-root
 # OBS: the UID and GID must be the same as the user that own the
 # input and the output volumes, so there isn't perms problems!!
-ARG NON_ROOT_USR="nonroot"
-ARG NON_ROOT_UID="1000"
-ARG NON_ROOT_GID="1000"
-RUN groupadd --gid $NON_ROOT_GID $NON_ROOT_USR
-RUN useradd --uid $NON_ROOT_UID --gid $NON_ROOT_GID --comment "Non-root User Account" --create-home $NON_ROOT_USR
+# Se recomienda crear usuarios en el contendor de esta manera,
+# ver: https://nickjanetakis.com/blog/running-docker-containers-as-a-non-root-user-with-a-custom-uid-and-gid
+# Se agregar --no-log-init para prevenir un problema de seguridad,
+# ver: https://jtreminio.com/blog/running-docker-containers-as-current-host-user/
+RUN groupadd --gid $USER_GID $GRP_NAME
+RUN useradd --no-log-init --uid $USER_UID --gid $USER_GID --shell /bin/bash \
+    --comment "Non-root User Account" --create-home $USR_NAME
 
 # Modify the password of non-root user
-RUN echo "$NON_ROOT_USR:$NON_ROOT_PWD" | chpasswd
+RUN echo "$USR_NAME:$USER_PWD" | chpasswd
 
-# Add non-root user to sudoers
-RUN adduser $NON_ROOT_USR sudo
+# Add non-root user to sudoers and to adm group
+# The adm group was added to allow non-root user to see logs
+RUN usermod -aG sudo $USR_NAME && \
+    usermod -aG adm $USR_NAME
 
-# Conf passwordless ssh:
-USER $NON_ROOT_USR
-# Generar clave pública y privada
-RUN mkdir -p /tmp/.ssh && \
-    ssh-keygen -b 2048 -t rsa -f /tmp/.ssh/id_rsa -q -N ""
-# Copiar clave al servidor detino de los pronos
-ARG SSHUSER
-ARG SSHPASS
-ARG SSHHOST
-RUN sshpass -e ssh-copy-id -i /tmp/.ssh/id_rsa -o StrictHostKeyChecking=no -f ${SSHUSER}@${SSHHOST}
-# Al finalizar la configuración de ssh se vuelve al usuario root
-USER root
+# To allow sudo without password
+# RUN echo "$USR_NAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USR_NAME && \
+#     chmod 0440 /etc/sudoers.d/$USR_NAME
 
-# Setup cron
-ARG RSYNC_CMD="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
-ARG RDR_OUTPUT_CMD=">> /proc/1/fd/1 2>> /proc/1/fd/1"
-ARG CRON_TIME_STR="0 0 20 * *"
-ARG SRC_FILES="/data/{folder1/*.html,folder2/*.html}"
-ARG DEST_FOLDER="/tmp"
-RUN (echo "${CRON_TIME_STR} ${RSYNC_CMD} ${SRC_FILES} ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} ${RDR_OUTPUT_CMD}") | \
-    crontab -u $NON_ROOT_USR -
 
-# Set cron default shell to bash
-RUN (echo "SHELL=/bin/bash"; crontab -u $NON_ROOT_USR -l) | crontab -u $NON_ROOT_USR -
 
+###########################################
+## Stage 3: Install management packages  ##
+###########################################
+
+# Create image
+FROM non_root_img AS base_builder
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # install Tini (https://github.com/krallin/tini#using-tini)
+        tini \
+        # to see process with pid 1
+        htop \
+        # to allow edit files
+        vim \
+        # to run process with cron
+        cron && \
+    rm -rf /var/lib/apt/lists/*
+
+# Setup cron to allow it run as a non root user
+RUN chmod u+s $(which cron)
 
 # Add Tini (https://github.com/krallin/tini#using-tini)
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 
+
+
+####################################
+## Stage 4: Install and setup APP ##
+####################################
+
+# Create image
+FROM base_builder AS app_builder
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Renew ARGs
+ARG USR_NAME
+ARG GRP_NAME
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # to use envsubst
+        gettext-base && \
+    rm -rf /var/lib/apt/lists/*
+
+# Conf passwordless ssh:
+USER $USR_NAME
+# Generate public and private key
+RUN mkdir -p /tmp/.ssh && \
+    ssh-keygen -b 2048 -t rsa -f /tmp/.ssh/id_rsa -q -N ""
+# Return to root user
+USER root
+
+# Set rsync command aliases
+ARG RSYNC_CMD="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
+RUN echo "alias rsync-cmd=\"${RSYNC_CMD}\"" >> /root/.bashrc
+RUN echo "alias rsync-cmd=\"${RSYNC_CMD}\"" >> /home/${USR_NAME}/.bashrc
+
+# Copy CRON config file
+COPY crontab.txt /tmp/crontab.txt
+RUN chown $USR_NAME:$GRP_NAME /tmp/crontab.txt
+
+# Set environment variables needed
+ENV SSHUSER=
+ENV SSHHOST=
+ENV SSHPASS=
+ENV SRC_FILES="/data/{folder1/*.html,folder2/*.html}"
+ENV DEST_FOLDER="/tmp"
+
+# Create startup/login script. This script should replace
+# the environment variables defined above.
+RUN printf "#!/bin/bash \n\
+set -e \n\
+# Substitute environment variables \n\
+envsubst < /tmp/crontab.txt | tee /tmp/crontab.txt >/dev/null \n\
+# Config crontab \n\
+cat /tmp/crontab.txt | crontab - \n\
+# Config passwordless ssh!! \n\
+# Copy key to destination server \n\
+sshpass -e ssh-copy-id -i /tmp/.ssh/id_rsa -o StrictHostKeyChecking=no -f \${SSHUSER}@\${SSHHOST} \n\
+# Unset environment variable SSHPASS \n\
+unset SSHPASS \n\
+# To run CMD after the entrypoint \n\
+# See: https://stackoverflow.com/q/39082768 \n\
+# See: https://stackoverflow.com/a/5163260 \n\
+# OBS: exec $@ fails with double quotes \n\
+exec \$@ \n\
+\n" > /entrypoint.sh
+RUN chmod a+x /entrypoint.sh
+
+
+
+################################
+## Stage 5: Setup final image ##
+################################
+
+# Import final image
+FROM app_builder
+
+# Load global USER args
+ARG USR_NAME
+
+# Add Tini (https://github.com/krallin/tini#using-tini)
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/entrypoint.sh" ]
+
 # Run your program under Tini (https://github.com/krallin/tini#using-tini)
-CMD ["cron", "-f"]
+CMD [ "cron", "-fL", "15" ]
 # or docker run your-image /your/program ...
 
 # Access non-root user directory
-WORKDIR /home/$NON_ROOT_USR
+WORKDIR /home/$USR_NAME
 
 # Switch back to non-root user to avoid accidental container runs as root
-USER $NON_ROOT_USR
+USER $USR_NAME
 
 
 
-# CONSTRUIR CONTENEDOR
-# export DOCKER_BUILDKIT=1
-# docker build --file Dockerfile \
-#        --build-arg ROOT_PWD=<root_password> \
-#        --build-arg NON_ROOT_PWD=<user_password> \
-#        --build-arg NON_ROOT_UID=$(stat -c "%u" .) \
-#        --build-arg NON_ROOT_GID=$(stat -c "%g" .) \
-#        --build-arg SSHUSER=<user-of-rsync-dest> \
-#        --build-arg SSHPASS=<pass-of-rsync-dest> \
-#        --build-arg SSHHOST=<host-of-rsync-dest> \
-#        --build-arg CRON_TIME_STR="0 0 20 * *" \
-#        --build-arg SRC_FILES="<path-to-src-files>" \
-#        --build-arg DEST_FOLDER="<path-to-dest-folder>" \
-#        --tag sync-pronos:latest .
+# BUILD IMAGE
+#
+# DOCKER_BUILDKIT=1 \
+# docker build --force-rm \
+# --tag sync-pronos:latest \
+# --file Dockerfile .
 
-# CORRER OPERACIONALMENTE CON CRON
+# RUN WITH CRON
+#
 # docker run --name sync-pronos \
-#        --volume <path-to-src-files-folder>:<path-to-src-files-folder> \
-#        --detach sync-pronos:latest
+# --env SSHUSER=<user-of-rsync-dest> \
+# --env SSHHOST=<host-of-rsync-dest> \
+# --env SSHPASS=<pass-of-rsync-dest> \
+# --env SRC_FILES="<path-to-src-files>" \
+# --env DEST_FOLDER="<path-to-dest-folder>" \
+# --volume <path-to-src-files-folder>:<path-to-src-files-folder> \
+# --detach sync-pronos:latest
 
 
 
-# VER RAM USADA POR LOS CONTENEDORES CORRIENDO
+# VIEW RAM USED BY RUNNING CONTAINERS
 # docker stats --format "table {{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.PIDs}}\t{{.MemUsage}}" --no-stream
 
-# VER LOGS (CON COLORES) DE CONTENEDOR CORRIENDO EN SEGUNDO PLANO
+# SEE LOGS (WITH COLORS) OF CONTAINER RUNNING IN THE BACKGROUND
 # docker logs --follow ereg 2>&1 | ccze -m ansi
