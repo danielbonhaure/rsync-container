@@ -158,9 +158,10 @@ RUN mkdir -p /tmp/.ssh && \
 USER root
 
 # Set rsync command aliases
-ARG RSYNC_CMD="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
-RUN echo "alias rsync-cmd=\"${RSYNC_CMD}\"" >> /root/.bashrc
-RUN echo "alias rsync-cmd=\"${RSYNC_CMD}\"" >> /home/${USR_NAME}/.bashrc
+ARG RSYNC="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
+ARG SRC_DEST_STR="\${SRC_FILES} \${SSHUSER}@\${SSHHOST}:\${DEST_FOLDER}"
+RUN echo "alias rs=\"${RSYNC}\"" >> /home/${USR_NAME}/.bash_aliases
+RUN echo "alias rsSRCtoDEST=\"${RSYNC} ${SRC_DEST_STR}\"" >> /home/${USR_NAME}/.bash_aliases
 
 # Copy CRON config file
 COPY crontab.txt /tmp/crontab.txt
