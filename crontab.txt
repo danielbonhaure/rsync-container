@@ -1,3 +1,0 @@
-SHELL=/bin/bash
-
-0 0 20 * * rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup ${SRC_FILES} ${SSHUSER}@${SSHHOST}:${DEST_FOLDER} >> /proc/1/fd/1 2>> /proc/1/fd/1

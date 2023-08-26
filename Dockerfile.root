@@ -1,0 +1,191 @@
+
+##########################
+## Set GLOBAL arguments ##
+##########################
+
+# Set RSYNC global ARGs
+ARG RSYNC="rsync -e 'ssh -i /root/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
+ARG SRC_DEST_STR="\${SRC_FILES} \${SSHUSER}@\${SSHHOST}:\${DEST_FOLDER}"
+
+
+######################################
+## Stage 1: Install and Setup RSYNC ##
+######################################
+
+# Create image
+FROM debian:stable-slim AS rsync_builder
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Renew RSYNC global ARGs
+ARG RSYNC
+ARG SRC_DEST_STR
+
+# Set RSYNC envvars
+ENV SSHUSER=
+ENV SSHHOST=
+ENV SSHPASS=
+ENV SRC_FILES="/data/{folder1/*.html,folder2/*.html}"
+ENV DEST_FOLDER="/tmp"
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq --no-install-recommends install \
+        # to run rsync
+        rsync \
+        # to run ssh-keygen
+        openssh-client \
+        # to send public key to rsync destine
+        sshpass && \
+    rm -rf /var/lib/apt/lists/*
+
+# Generate public and private key
+RUN mkdir -p /root/.ssh && \
+    ssh-keygen -b 2048 -t rsa -f /root/.ssh/id_rsa -q -N ""
+
+# Set rsync command aliases
+
+RUN echo "alias rs=\"${RSYNC}\"" >> /root/.bashrc
+RUN echo "alias rsSRCtoDEST=\"${RSYNC} ${SRC_DEST_STR}\"" >> /root/.bashrc
+
+
+
+#####################################
+## Stage 2: Install and Setup CRON ##
+#####################################
+
+# Create image
+FROM rsync_builder AS rsync_cron
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Renew RSYNC global ARGs
+ARG RSYNC
+ARG SRC_DEST_STR
+
+# Set CRON environment variable
+ENV CRON_TIME_STR="0 0 * * *"
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # to use envsubst
+        cron && \
+    rm -rf /var/lib/apt/lists/*
+
+# Setup CRON to allow it run as a non root user
+RUN chmod u+s $(which cron)
+
+# Create CRON config file
+RUN printf "\n\
+SHELL=/bin/bash \n\
+# Setup cron to run rsync \n\
+\${CRON_TIME_STR} ${RSYNC} ${SRC_DEST_STR} >> /proc/1/fd/1 2>> /proc/1/fd/1\n\
+\n" > /tmp/crontab.txt
+RUN chmod a+rw /tmp/crontab.txt
+
+
+
+###########################################
+## Stage 2: Install management packages  ##
+###########################################
+
+# Create image
+FROM rsync_cron AS rsync_final
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # install Tini (https://github.com/krallin/tini#using-tini)
+        tini \
+        # to see process with pid 1
+        htop procps \
+        # to allow edit files
+        vim && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add Tini (https://github.com/krallin/tini#using-tini)
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
+
+
+
+################################
+## Stage 4: Setup final image ##
+################################
+
+# Import final image
+FROM rsync_final
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # to use envsubst
+        gettext-base && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create startup/login script. This script should replace
+# the environment variables defined above.
+RUN printf "#!/bin/bash \n\
+set -e \n\
+# Substitute environment variables \n\
+envsubst < /tmp/crontab.txt | tee /tmp/crontab.txt >/dev/null \n\
+# Config crontab \n\
+cat /tmp/crontab.txt | crontab - \n\
+# Config passwordless ssh!! \n\
+# Copy key to destination server \n\
+sshpass -e ssh-copy-id -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no -f \${SSHUSER}@\${SSHHOST} \n\
+# Unset environment variable SSHPASS \n\
+unset SSHPASS \n\
+# To run CMD after the entrypoint \n\
+# See: https://stackoverflow.com/q/39082768 \n\
+# See: https://stackoverflow.com/a/5163260 \n\
+# OBS: exec $@ fails with double quotes \n\
+exec \$@ \n\
+\n" > /entrypoint.sh
+RUN chmod a+x /entrypoint.sh
+
+# Add Tini (https://github.com/krallin/tini#using-tini)
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/entrypoint.sh" ]
+
+# Run your program under Tini (https://github.com/krallin/tini#using-tini)
+CMD [ "cron", "-fL", "15" ]
+# or docker run your-image /your/program ...
+
+
+
+# BUILD IMAGE
+#
+# DOCKER_BUILDKIT=1 \
+# docker build --force-rm \
+# --tag sync-pronos:latest \
+# --file Dockerfile.root .
+
+# RUN WITH CRON
+#
+# docker run --name sync-pronos \
+# --env SSHUSER=<user-of-rsync-dest> \
+# --env SSHHOST=<host-of-rsync-dest> \
+# --env SSHPASS=<pass-of-rsync-dest> \
+# --env SRC_FILES="<path-to-src-files>" \
+# --env DEST_FOLDER="<path-to-dest-folder>" \
+# --volume <path-to-src-files-folder>:<path-to-src-files-folder> \
+# --detach sync-pronos:latest
+
+
+
+# VIEW RAM USED BY RUNNING CONTAINERS
+# docker stats --format "table {{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.PIDs}}\t{{.MemUsage}}" --no-stream
+
+# SEE LOGS (WITH COLORS) OF CONTAINER RUNNING IN THE BACKGROUND
+# docker logs --follow ereg 2>&1 | ccze -m ansi

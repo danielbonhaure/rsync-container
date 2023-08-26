@@ -23,7 +23,7 @@ ARG USER_PWD=$USR_NAME
 #################################################
 
 # Create image
-FROM debian:bullseye-slim AS rsync_builder
+FROM debian:stable-slim AS rsync_core_builder
 
 # Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
@@ -41,12 +41,44 @@ RUN apt-get -y -qq update && \
 
 
 
+###########################################
+## Stage 2: Install management packages  ##
+###########################################
+
+# Create image
+FROM rsync_core_builder AS rsync_builder
+
+# Set environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install OS packages
+RUN apt-get -y -qq update && \
+    apt-get -y -qq upgrade && \
+    apt-get -y -qq --no-install-recommends install \
+        # install Tini (https://github.com/krallin/tini#using-tini)
+        tini \
+        # to see process with pid 1
+        htop \
+        # to allow edit files
+        vim \
+        # to run process with cron
+        cron && \
+    rm -rf /var/lib/apt/lists/*
+
+# Setup cron to allow it run as a non root user
+RUN chmod u+s $(which cron)
+
+# Add Tini (https://github.com/krallin/tini#using-tini)
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
+
+
+
 ###################################
-## Stage 2: Create non-root user ##
+## Stage 3: Create non-root user ##
 ###################################
 
 # Create image
-FROM rsync_builder AS non_root_img
+FROM rsync_builder AS rsync_nonroot
 
 # Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
@@ -95,44 +127,12 @@ RUN usermod -aG sudo $USR_NAME && \
 
 
 
-###########################################
-## Stage 3: Install management packages  ##
-###########################################
-
-# Create image
-FROM non_root_img AS base_builder
-
-# Set environment variables
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install OS packages
-RUN apt-get -y -qq update && \
-    apt-get -y -qq upgrade && \
-    apt-get -y -qq --no-install-recommends install \
-        # install Tini (https://github.com/krallin/tini#using-tini)
-        tini \
-        # to see process with pid 1
-        htop \
-        # to allow edit files
-        vim \
-        # to run process with cron
-        cron && \
-    rm -rf /var/lib/apt/lists/*
-
-# Setup cron to allow it run as a non root user
-RUN chmod u+s $(which cron)
-
-# Add Tini (https://github.com/krallin/tini#using-tini)
-ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
-
-
-
 ####################################
 ## Stage 4: Install and setup APP ##
 ####################################
 
 # Create image
-FROM base_builder AS app_builder
+FROM rsync_nonroot AS rsync_final
 
 # Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
@@ -152,19 +152,26 @@ RUN apt-get -y -qq update && \
 # Conf passwordless ssh:
 USER $USR_NAME
 # Generate public and private key
-RUN mkdir -p /tmp/.ssh && \
-    ssh-keygen -b 2048 -t rsa -f /tmp/.ssh/id_rsa -q -N ""
+RUN mkdir -p /home/${USR_NAME}/.ssh && \
+    ssh-keygen -b 2048 -t rsa -f /home/${USR_NAME}/.ssh/id_rsa -q -N ""
 # Return to root user
 USER root
 
 # Set rsync command aliases
-ARG RSYNC="rsync -e 'ssh -i /tmp/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
+ARG RSYNC="rsync -e 'ssh -i /home/${USR_NAME}/.ssh/id_rsa' -iPavhz --chown=nobody:nogroup"
 ARG SRC_DEST_STR="\${SRC_FILES} \${SSHUSER}@\${SSHHOST}:\${DEST_FOLDER}"
 RUN echo "alias rs=\"${RSYNC}\"" >> /home/${USR_NAME}/.bash_aliases
 RUN echo "alias rsSRCtoDEST=\"${RSYNC} ${SRC_DEST_STR}\"" >> /home/${USR_NAME}/.bash_aliases
 
-# Copy CRON config file
-COPY crontab.txt /tmp/crontab.txt
+# Create CRON config file
+RUN printf "\n\
+SHELL=/bin/bash \n\
+# Setup cron to run rsync \n\
+\${CRON_TIME_STR} ${RSYNC} ${SRC_DEST_STR} >> /proc/1/fd/1 2>> /proc/1/fd/1\n\
+\n" > /tmp/crontab.txt
+RUN chmod a+rw /tmp/crontab.txt
+
+# Change CRON config file owner
 RUN chown $USR_NAME:$GRP_NAME /tmp/crontab.txt
 
 # Set environment variables needed
@@ -173,6 +180,7 @@ ENV SSHHOST=
 ENV SSHPASS=
 ENV SRC_FILES="/data/{folder1/*.html,folder2/*.html}"
 ENV DEST_FOLDER="/tmp"
+ENV CRON_TIME_STR="0 3 * * *"
 
 # Create startup/login script. This script should replace
 # the environment variables defined above.
@@ -184,7 +192,7 @@ envsubst < /tmp/crontab.txt | tee /tmp/crontab.txt >/dev/null \n\
 cat /tmp/crontab.txt | crontab - \n\
 # Config passwordless ssh!! \n\
 # Copy key to destination server \n\
-sshpass -e ssh-copy-id -i /tmp/.ssh/id_rsa -o StrictHostKeyChecking=no -f \${SSHUSER}@\${SSHHOST} \n\
+sshpass -e ssh-copy-id -i /home/${USR_NAME}/.ssh/id_rsa -o StrictHostKeyChecking=no -f \${SSHUSER}@\${SSHHOST} \n\
 # Unset environment variable SSHPASS \n\
 unset SSHPASS \n\
 # To run CMD after the entrypoint \n\
@@ -202,7 +210,7 @@ RUN chmod a+x /entrypoint.sh
 ################################
 
 # Import final image
-FROM app_builder
+FROM rsync_final
 
 # Load global USER args
 ARG USR_NAME
@@ -227,7 +235,7 @@ USER $USR_NAME
 # DOCKER_BUILDKIT=1 \
 # docker build --force-rm \
 # --tag sync-pronos:latest \
-# --file Dockerfile .
+# --file Dockerfile.nonroot .
 
 # RUN WITH CRON
 #
